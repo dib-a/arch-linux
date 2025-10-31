@@ -1,23 +1,53 @@
 #!/usr/bin/env bash
 # ================================================================
 #  Arch Linux Minimal Installation Script (with Full LUKS2 Encryption)
-#  Author: dib-a
+#  Author: [Your Name]
 #  License: MIT
 # ================================================================
 
 set -euo pipefail
 
+# ========================= DEFAULTS =============================
+DEFAULT_DISK="/dev/sda"
+DEFAULT_HOSTNAME="arch"
+DEFAULT_USERNAME="user"
+DEFAULT_TIMEZONE="Europe/Berlin"
+DEFAULT_LOCALE="en_US.UTF-8"
+DEFAULT_KEYMAP="us"
+# ================================================================
+
 echo "=== Arch Linux Minimal Installation Script ==="
 echo "This will ERASE the selected disk and install Arch Linux with full LUKS2 encryption."
-read -rp "Enter target disk (e.g. /dev/sda or /dev/nvme0n1): " DISK
-read -rp "Enter hostname: " HOSTNAME
-read -rp "Enter username: " USERNAME
-read -rp "Enter your timezone (e.g. Europe/Berlin): " TIMEZONE
-read -rp "Enter your locale (default: en_US.UTF-8): " LOCALE
-LOCALE=${LOCALE:-en_US.UTF-8}
+echo
 
-# Confirm
-echo "WARNING: This will destroy all data on $DISK!"
+# --- User Inputs with Defaults ---
+read -rp "Enter target disk [${DEFAULT_DISK}]: " DISK
+DISK=${DISK:-$DEFAULT_DISK}
+
+read -rp "Enter hostname [${DEFAULT_HOSTNAME}]: " HOSTNAME
+HOSTNAME=${HOSTNAME:-$DEFAULT_HOSTNAME}
+
+read -rp "Enter username [${DEFAULT_USERNAME}]: " USERNAME
+USERNAME=${USERNAME:-$DEFAULT_USERNAME}
+
+read -rp "Enter your timezone [${DEFAULT_TIMEZONE}]: " TIMEZONE
+TIMEZONE=${TIMEZONE:-$DEFAULT_TIMEZONE}
+
+read -rp "Enter your locale [${DEFAULT_LOCALE}]: " LOCALE
+LOCALE=${LOCALE:-$DEFAULT_LOCALE}
+
+read -rp "Enter keyboard layout [${DEFAULT_KEYMAP}]: " KEYMAP
+KEYMAP=${KEYMAP:-$DEFAULT_KEYMAP}
+
+echo
+echo "=== SUMMARY ==="
+echo "Disk:        $DISK"
+echo "Hostname:    $HOSTNAME"
+echo "Username:    $USERNAME"
+echo "Timezone:    $TIMEZONE"
+echo "Locale:      $LOCALE"
+echo "Keymap:      $KEYMAP"
+echo "================"
 read -rp "Type YES to continue: " CONFIRM
 [[ "$CONFIRM" == "YES" ]] || { echo "Aborted."; exit 1; }
 
@@ -25,6 +55,8 @@ read -rp "Type YES to continue: " CONFIRM
 #  Partitioning
 # ================================================================
 echo "[1/10] Partitioning $DISK..."
+loadkeys "$KEYMAP"
+timedatectl set-ntp true
 
 wipefs -a "$DISK"
 parted -s "$DISK" mklabel gpt
@@ -34,7 +66,6 @@ parted -s "$DISK" mkpart primary ext4 301MiB 100%
 
 EFI_PART="${DISK}1"
 CRYPT_PART="${DISK}2"
-
 [[ "$DISK" == *"nvme"* ]] && {
   EFI_PART="${DISK}p1"
   CRYPT_PART="${DISK}p2"
@@ -46,7 +77,6 @@ mkfs.fat -F32 -n EFI "$EFI_PART"
 #  Encryption Setup
 # ================================================================
 echo "[2/10] Setting up LUKS2 encryption on $CRYPT_PART..."
-
 cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 \
   --key-size 512 --hash sha512 --iter-time 5000 "$CRYPT_PART"
 
@@ -56,7 +86,6 @@ cryptsetup open "$CRYPT_PART" cryptroot
 #  Filesystems and Mounting
 # ================================================================
 echo "[3/10] Formatting and mounting..."
-
 mkfs.ext4 -L ROOT /dev/mapper/cryptroot
 mount -L ROOT /mnt
 mkdir -p /mnt/boot
@@ -74,12 +103,12 @@ pacstrap -K /mnt base linux linux-firmware neovim dhcpcd grub efibootmgr
 echo "[5/10] Generating fstab..."
 genfstab -U /mnt >> /mnt/etc/fstab
 
-# Create post-install config script inside chroot
+# Create configuration script inside chroot
 cat <<EOF > /mnt/root/chroot_config.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[6/10] Setting timezone and locale..."
+echo "[6/10] Configuring system timezone and locale..."
 ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
 hwclock --systohc
 
@@ -90,12 +119,12 @@ echo "LANG=$LOCALE" > /etc/locale.conf
 echo "[7/10] Setting hostname..."
 echo "$HOSTNAME" > /etc/hostname
 
-# Setup mkinitcpio hooks
+# Setup mkinitcpio hooks for encryption
 echo "[8/10] Configuring initramfs..."
 sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf block encrypt filesystems keyboard fsck)/' /etc/mkinitcpio.conf
 mkinitcpio -P
 
-# Find LUKS UUID
+# Detect LUKS UUID
 CRYPTUUID=\$(blkid -s UUID -o value $CRYPT_PART)
 
 # Configure GRUB
