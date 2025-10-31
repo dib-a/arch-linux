@@ -95,7 +95,7 @@ mount "$EFI_PART" /mnt/boot
 #  Base Installation
 # ================================================================
 echo "[4/10] Installing base system..."
-pacstrap -K /mnt base linux linux-firmware neovim dhcpcd grub efibootmgr
+pacstrap -K /mnt base linux linux-firmware neovim dhcpcd grub efibootmgr sudo
 
 # ================================================================
 #  System Configuration
