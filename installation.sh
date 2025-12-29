@@ -29,28 +29,27 @@ log_error() {
 }
 
 # ================================================================
-#  Disk Selection
+#  Disk Selection using PS3
 # ================================================================
 log "[1/13] Detecting available disks..."
 # List available disks (excluding partitions)
-AVAILABLE_DISKS=$(lsblk -d -o NAME,TYPE | grep -E "sd|nvme" | awk '{print "/dev/" $1}')
+AVAILABLE_DISKS=($(lsblk -d -o NAME,TYPE | grep -E "sd|nvme" | awk '{print "/dev/" $1}'))
+DISK_NAMES=($(lsblk -d -o NAME,TYPE | grep -E "sd|nvme" | awk '{print $1}'))
 
-if [[ -z "$AVAILABLE_DISKS" ]]; then
+if [[ ${#AVAILABLE_DISKS[@]} -eq 0 ]]; then
   log_error "No valid disks found. Exiting."
   exit 1
 fi
 
+# Display the list of available disks
 echo "Available disks:"
-echo "$AVAILABLE_DISKS"
-
-# Allow user to select a disk
-while true; do
-  read -rp "Enter the disk to use (e.g., /dev/sda): " DISK
-  if [[ "$AVAILABLE_DISKS" =~ "$DISK" ]]; then
-    log "Selected disk: $DISK"
+PS3="Select a disk: "
+select DISK in "${AVAILABLE_DISKS[@]}"; do
+  if [[ -n "$DISK" ]]; then
+    log "You selected: $DISK"
     break
   else
-    log_error "Invalid disk selection. Please select a valid disk from the list."
+    log_error "Invalid selection. Please choose a valid disk."
   fi
 done
 
