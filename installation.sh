@@ -153,7 +153,7 @@ if [[ "$UFW" =~ ^[Yy]$ ]]; then
   PKGS+=" ufw"
 fi
 
-pacstrap -K /mnt $PKGS
+pacstrap /mnt $PKGS
 
 # ================================================================
 #  System Configuration
@@ -165,6 +165,14 @@ genfstab -U /mnt >> /mnt/etc/fstab
 cat <<EOF > /mnt/root/chroot_config.sh
 #!/usr/bin/env bash
 set -euo pipefail
+
+log() {
+  echo "[INFO] \$1"
+}
+
+log_error() {
+  echo "[ERROR] \$1" >&2
+}
 
 log "[7/13] Configuring system timezone and locale..."
 ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
