@@ -8,7 +8,6 @@
 set -euo pipefail
 
 # ========================= DEFAULTS =============================
-DEFAULT_DISK="/dev/sda"
 DEFAULT_HOSTNAME="arch"
 DEFAULT_USERNAME="user"
 DEFAULT_TIMEZONE="Europe/Berlin"
@@ -17,16 +16,47 @@ DEFAULT_KEYMAP="us"
 DEFAULT_ENCRYPT="y"
 DEFAULT_SSH="n"
 DEFAULT_UFW="n"
+DEFAULT_DISK=""
 # ================================================================
 
-echo "=== Arch Linux Minimal Installation Script ==="
-echo "This will ERASE the selected disk and install Arch Linux."
-echo
+# Logging function
+log() {
+  echo "[INFO] $1"
+}
 
-# --- User Inputs with Defaults ---
-read -rp "Enter target disk [${DEFAULT_DISK}]: " DISK
-DISK=${DISK:-$DEFAULT_DISK}
+log_error() {
+  echo "[ERROR] $1" >&2
+}
 
+# ================================================================
+#  Disk Selection
+# ================================================================
+log "[1/13] Detecting available disks..."
+# List available disks (excluding partitions)
+AVAILABLE_DISKS=$(lsblk -d -o NAME,TYPE | grep -E "sd|nvme" | awk '{print "/dev/" $1}')
+
+if [[ -z "$AVAILABLE_DISKS" ]]; then
+  log_error "No valid disks found. Exiting."
+  exit 1
+fi
+
+echo "Available disks:"
+echo "$AVAILABLE_DISKS"
+
+# Allow user to select a disk
+while true; do
+  read -rp "Enter the disk to use (e.g., /dev/sda): " DISK
+  if [[ "$AVAILABLE_DISKS" =~ "$DISK" ]]; then
+    log "Selected disk: $DISK"
+    break
+  else
+    log_error "Invalid disk selection. Please select a valid disk from the list."
+  fi
+done
+
+# ================================================================
+#  User Inputs with Defaults
+# ================================================================
 read -rp "Encrypt root partition? [y/N] [${DEFAULT_ENCRYPT}]: " ENCRYPT
 ENCRYPT=${ENCRYPT:-$DEFAULT_ENCRYPT}
 
@@ -67,9 +97,9 @@ read -rp "Type YES to continue: " CONFIRM
 [[ "$CONFIRM" == "YES" ]] || { echo "Aborted."; exit 1; }
 
 # ================================================================
-#  Partitioning
+#  Disk Partitioning and Formatting
 # ================================================================
-echo "[1/13] Partitioning $DISK..."
+log "[2/13] Partitioning $DISK..."
 loadkeys "$KEYMAP"
 timedatectl set-ntp true
 
@@ -79,12 +109,14 @@ parted -s "$DISK" mkpart primary fat32 1MiB 301MiB
 parted -s "$DISK" set 1 esp on
 parted -s "$DISK" mkpart primary ext4 301MiB 100%
 
-EFI_PART="${DISK}1"
-ROOT_PART="${DISK}2"
-[[ "$DISK" == *"nvme"* ]] && {
+# Set partitions based on NVMe or SATA disk type
+if [[ "$DISK" == *"nvme"* ]]; then
   EFI_PART="${DISK}p1"
   ROOT_PART="${DISK}p2"
-}
+else
+  EFI_PART="${DISK}1"
+  ROOT_PART="${DISK}2"
+fi
 
 mkfs.fat -F32 -n EFI "$EFI_PART"
 
@@ -92,20 +124,19 @@ mkfs.fat -F32 -n EFI "$EFI_PART"
 #  Optional Encryption Setup
 # ================================================================
 if [[ "$ENCRYPT" =~ ^[Yy]$ ]]; then
-  echo "[2/13] Setting up LUKS2 encryption on $ROOT_PART..."
-  cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 \
-    --key-size 512 --hash sha512 --iter-time 5000 "$ROOT_PART"
+  log "[3/13] Setting up LUKS2 encryption on $ROOT_PART..."
+  cryptsetup luksFormat --type luks2 --cipher aes-xts-plain64 --key-size 512 --hash sha512 --iter-time 5000 "$ROOT_PART"
   cryptsetup open "$ROOT_PART" cryptroot
   ROOT_MAPPER="/dev/mapper/cryptroot"
 else
-  echo "[2/13] Skipping encryption for root..."
+  log "[3/13] Skipping encryption for root..."
   ROOT_MAPPER="$ROOT_PART"
 fi
 
 # ================================================================
 #  Filesystems and Mounting
 # ================================================================
-echo "[3/13] Formatting and mounting..."
+log "[4/13] Formatting and mounting..."
 mkfs.ext4 -L ROOT "$ROOT_MAPPER"
 mount -L ROOT /mnt
 mkdir -p /mnt/boot
@@ -114,7 +145,7 @@ mount "$EFI_PART" /mnt/boot
 # ================================================================
 #  Base Installation
 # ================================================================
-echo "[4/13] Installing base system..."
+log "[5/13] Installing base system..."
 PKGS="base linux linux-firmware neovim dhcpcd grub efibootmgr sudo"
 if [[ "$SSH" =~ ^[Yy]$ ]]; then
   PKGS+=" openssh"
@@ -128,7 +159,7 @@ pacstrap -K /mnt $PKGS
 # ================================================================
 #  System Configuration
 # ================================================================
-echo "[5/13] Generating fstab..."
+log "[6/13] Generating fstab..."
 genfstab -U /mnt >> /mnt/etc/fstab
 
 # Create configuration script inside chroot
@@ -136,7 +167,7 @@ cat <<EOF > /mnt/root/chroot_config.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[6/13] Configuring system timezone and locale..."
+log "[7/13] Configuring system timezone and locale..."
 ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
 hwclock --systohc
 
@@ -144,21 +175,21 @@ sed -i "s/^#\(${LOCALE}.*\)/\1/" /etc/locale.gen
 locale-gen
 echo "LANG=$LOCALE" > /etc/locale.conf
 
-echo "[7/13] Setting hostname..."
+log "[8/13] Setting hostname..."
 echo "$HOSTNAME" > /etc/hostname
 
 # Setup mkinitcpio hooks for encryption if needed
 if [[ "$ENCRYPT" =~ ^[Yy]$ ]]; then
-  echo "[8/13] Configuring initramfs for encryption..."
+  log "[9/13] Configuring initramfs for encryption..."
   sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf block encrypt filesystems keyboard fsck)/' /etc/mkinitcpio.conf
 else
-  echo "[8/13] Configuring standard initramfs..."
+  log "[9/13] Configuring standard initramfs..."
   sed -i 's/^HOOKS=.*/HOOKS=(base udev autodetect modconf block filesystems keyboard fsck)/' /etc/mkinitcpio.conf
 fi
 mkinitcpio -P
 
 # Configure GRUB
-echo "[9/13] Installing and configuring GRUB bootloader..."
+log "[10/13] Installing and configuring GRUB bootloader..."
 sed -i '/^GRUB_ENABLE_CRYPTODISK=/d' /etc/default/grub
 
 if [[ "$ENCRYPT" =~ ^[Yy]$ ]]; then
@@ -176,14 +207,14 @@ systemctl enable dhcpcd
 
 # SSH setup
 if [[ "$SSH" =~ ^[Yy]$ ]]; then
-  echo "[10/13] Setting up SSH..."
+  log "[11/13] Setting up SSH..."
   systemctl enable sshd
   ssh-keygen -A
 fi
 
 # Firewall setup
 if [[ "$UFW" =~ ^[Yy]$ ]]; then
-  echo "[11/13] Setting up UFW firewall..."
+  log "[12/13] Setting up UFW firewall..."
   systemctl enable ufw
   if [[ "$SSH" =~ ^[Yy]$ ]]; then
     ufw allow ssh
@@ -194,18 +225,18 @@ if [[ "$UFW" =~ ^[Yy]$ ]]; then
 fi
 
 # Root password
-echo "[12/13] Set root password:"
+log "[13/13] Set root password:"
 passwd
 
 # Create user
 useradd -mG wheel $USERNAME
-echo "Set password for user $USERNAME:"
+log "Set password for user $USERNAME:"
 passwd $USERNAME
 
 # Enable sudo for wheel group
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
 
-echo "=== Configuration inside chroot complete ==="
+log "=== Configuration inside chroot complete ==="
 EOF
 
 chmod +x /mnt/root/chroot_config.sh
@@ -213,27 +244,27 @@ chmod +x /mnt/root/chroot_config.sh
 # ================================================================
 #  Chroot Execution
 # ================================================================
-echo "[*] Entering chroot to finalize installation..."
+log "[*] Entering chroot to finalize installation..."
 arch-chroot /mnt /root/chroot_config.sh
 
 # ================================================================
 #  Cleanup
 # ================================================================
-echo "[*] Cleaning up..."
+log "[*] Cleaning up..."
 rm /mnt/root/chroot_config.sh
 umount -R /mnt
 if [[ "$ENCRYPT" =~ ^[Yy]$ ]]; then
   cryptsetup close cryptroot
 fi
 
-echo "=== Installation Complete ==="
+log "=== Installation Complete ==="
 if [[ "$SSH" =~ ^[Yy]$ ]]; then
-  echo "SSH is enabled by default. You can connect after boot."
+  log "SSH is enabled by default. You can connect after boot."
 fi
 if [[ "$UFW" =~ ^[Yy]$ ]]; then
-  echo "UFW firewall is enabled."
-  [[ "$SSH" =~ ^[Yy]$ ]] && echo "SSH is allowed through the firewall."
+  log "UFW firewall is enabled."
+  [[ "$SSH" =~ ^[Yy]$ ]] && log "SSH is allowed through the firewall."
 fi
-echo "Rebooting in 10 seconds..."
+log "Rebooting in 10 seconds..."
 sleep 10
 reboot
